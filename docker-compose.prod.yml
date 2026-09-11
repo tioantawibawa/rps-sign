@@ -1,0 +1,39 @@
+# Override produksi — dijalankan bersama docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Menambahkan reverse proxy Caddy (HTTPS otomatis) dan mengarahkan URL aplikasi
+# ke domain publik. Port infrastruktur (Postgres/MinIO/Mailpit) TIDAK diekspos
+# ke internet — pastikan firewall (ufw) hanya mengizinkan 22, 80, 443.
+
+services:
+  # Migrasi skema saja (TANPA seed) agar restart tidak menghapus data.
+  # Seed dijalankan sekali secara manual (lihat DEPLOY.md).
+  migrate:
+    command: >
+      /bin/sh -c "pnpm exec prisma migrate deploy || pnpm exec prisma db push --accept-data-loss"
+
+  app:
+    environment:
+      APP_URL: https://${DOMAIN}
+      NEXT_PUBLIC_APP_URL: https://${DOMAIN}
+      AUTH_URL: https://${DOMAIN}
+      AUTH_TRUST_HOST: "true"
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

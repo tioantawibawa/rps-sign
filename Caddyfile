@@ -1,0 +1,6 @@
+# Reverse proxy + HTTPS otomatis (Let's Encrypt) untuk RPS Sign.
+# Domain diambil dari variabel lingkungan DOMAIN (lihat docker-compose.prod.yml).
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

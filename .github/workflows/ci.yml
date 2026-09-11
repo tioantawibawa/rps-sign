@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec prisma generate
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db?schema=public
+          AUTH_SECRET: ci-placeholder-secret-string-least-32b
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rps
+          POSTGRES_PASSWORD: rps_password
+          POSTGRES_DB: rps_sign
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rps" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://rps:rps_password@localhost:5432/rps_sign?schema=public
+      AUTH_SECRET: ci-placeholder-secret-string-least-32b
+      APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      STORAGE_DRIVER: local
+      MAIL_DRIVER: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec prisma generate
+      - run: pnpm exec prisma db push
+      - run: pnpm db:seed
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm build
+      - name: Integration tests
+        run: pnpm test:integration
+        env:
+          RUN_INTEGRATION: "1"
+      - name: E2E tests
+        run: pnpm test:e2e

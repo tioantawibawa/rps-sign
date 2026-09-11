@@ -1,0 +1,694 @@
+// RPS Sign — Prisma schema
+// Sistem Pengesahan dan Tanda Tangan (Persetujuan Digital Internal) RPS.
+//
+// Conventions:
+//  - cuid() primary keys.
+//  - Money/immutable audit values are never mutated in place.
+//  - Composite indexes are added for the hot filter paths (status, scoping).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Role {
+  DOSEN
+  KOORDINATOR_RMK
+  KAPRODI
+  ADMIN
+  AUDITOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum StudyProgramLevel {
+  D3
+  D4
+  S1
+  S2
+  S3
+  PROFESI
+}
+
+enum AcademicTerm {
+  GANJIL
+  GENAP
+  PENDEK
+}
+
+enum DocumentStatus {
+  DRAFT
+  VALIDATING
+  READY_TO_SUBMIT
+  SUBMITTED
+  WAITING_LECTURER_SIGNATURE
+  WAITING_RMK_APPROVAL
+  WAITING_KAPRODI_APPROVAL
+  REVISION_REQUESTED
+  REJECTED
+  PROCESSING_FINAL_DOCUMENT
+  APPROVED
+  ARCHIVED
+  CANCELLED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REVISION_REQUESTED
+  REJECTED
+  SKIPPED
+  INVALIDATED
+}
+
+enum ValidationSeverity {
+  ERROR
+  WARNING
+  INFO
+}
+
+enum ValidationStatus {
+  PASSED
+  FAILED
+  RESOLVED
+}
+
+enum ChecklistStatus {
+  UNCHECKED
+  OK
+  ISSUE
+}
+
+enum RevisionCategory {
+  METADATA
+  CONTENT
+  FORMAT
+  SIGNATURE
+  OTHER
+}
+
+enum RevisionStatus {
+  OPEN
+  RESOLVED
+  CANCELLED
+}
+
+enum SignatureType {
+  DRAWN
+  UPLOADED
+}
+
+enum CertificateStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum NotificationType {
+  SUBMISSION_RECEIVED
+  APPROVAL_STAGE_ACTIVE
+  REVISION_REQUESTED
+  DOCUMENT_REJECTED
+  DOCUMENT_APPROVED
+  FINAL_DOCUMENT_READY
+  SLA_APPROACHING
+  SLA_BREACHED
+  GENERIC
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ----------------------------------------------------------------------------
+// Organization & academic structure
+// ----------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  logoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  faculties       Faculty[]
+  courses         Course[]
+  academicPeriods AcademicPeriod[]
+  users           User[]
+  documents       Document[]
+  workflows       Workflow[]
+  templates       SignaturePlacementTemplate[]
+  auditLogs       AuditLog[]
+  settings        SystemSetting[]
+}
+
+model Faculty {
+  id             String @id @default(cuid())
+  organizationId String
+  code           String
+  name           String
+
+  organization  Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  studyPrograms StudyProgram[]
+  assignments   UserAssignment[]
+  documents     Document[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+model StudyProgram {
+  id        String            @id @default(cuid())
+  facultyId String
+  code      String
+  name      String
+  level     StudyProgramLevel
+
+  faculty        Faculty          @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  courseClusters CourseCluster[]
+  courses        Course[]
+  assignments    UserAssignment[]
+  documents      Document[]
+
+  @@unique([facultyId, code])
+  @@index([facultyId])
+}
+
+model CourseCluster {
+  id             String  @id @default(cuid())
+  studyProgramId String
+  code           String
+  name           String
+  coordinatorId  String?
+
+  studyProgram StudyProgram     @relation(fields: [studyProgramId], references: [id], onDelete: Cascade)
+  coordinator  User?            @relation("ClusterCoordinator", fields: [coordinatorId], references: [id], onDelete: SetNull)
+  courses      Course[]
+  assignments  UserAssignment[]
+  documents    Document[]
+
+  @@unique([studyProgramId, code])
+  @@index([studyProgramId])
+  @@index([coordinatorId])
+}
+
+model Course {
+  id              String  @id @default(cuid())
+  organizationId  String
+  studyProgramId  String
+  clusterId       String?
+  code            String
+  name            String
+  credits         Int
+  defaultSemester Int
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  studyProgram StudyProgram   @relation(fields: [studyProgramId], references: [id], onDelete: Cascade)
+  cluster      CourseCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  documents    Document[]
+
+  @@unique([studyProgramId, code])
+  @@index([organizationId])
+  @@index([clusterId])
+}
+
+model AcademicPeriod {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  academicYear   String
+  term           AcademicTerm
+  startDate      DateTime
+  endDate        DateTime
+  isActive       Boolean      @default(false)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  documents    Document[]
+
+  @@unique([organizationId, academicYear, term])
+  @@index([organizationId, isActive])
+}
+
+// ----------------------------------------------------------------------------
+// Users, authentication & assignments
+// ----------------------------------------------------------------------------
+
+model User {
+  id             String     @id @default(cuid())
+  organizationId String
+  email          String     @unique
+  passwordHash   String? // nullable for SSO-only accounts
+  name           String
+  employeeNumber String?
+  academicNumber String?
+  titlePrefix    String? // e.g. "Dr."
+  titleSuffix    String? // e.g. "S.E., M.Si."
+  avatarUrl      String?
+  role           Role       @default(DOSEN)
+  status         UserStatus @default(ACTIVE)
+  lastLoginAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  organization        Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignments         UserAssignment[]
+  coordinatedClusters CourseCluster[]  @relation("ClusterCoordinator")
+  ownedDocuments      Document[]       @relation("DocumentOwner")
+  uploadedVersions    DocumentVersion[]
+  approvals           Approval[]
+  revisionRequests    RevisionRequest[]
+  signatures          Signature[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  updatedSettings     SystemSetting[]
+
+  @@index([organizationId, role])
+  @@index([status])
+}
+
+model UserAssignment {
+  id             String    @id @default(cuid())
+  userId         String
+  facultyId      String?
+  studyProgramId String?
+  clusterId      String?
+  validFrom      DateTime  @default(now())
+  validUntil     DateTime?
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  faculty      Faculty?      @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  studyProgram StudyProgram? @relation(fields: [studyProgramId], references: [id], onDelete: Cascade)
+  cluster      CourseCluster? @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([studyProgramId])
+  @@index([clusterId])
+  @@index([facultyId])
+}
+
+// Auth.js session storage (database strategy optional; we use JWT but keep the
+// tables so the Prisma adapter can be enabled without a migration later).
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// Password reset (one-time, hashed token).
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ----------------------------------------------------------------------------
+// Documents & versions
+// ----------------------------------------------------------------------------
+
+model Document {
+  id                  String         @id @default(cuid())
+  documentNumber      String?        @unique
+  organizationId      String
+  facultyId           String
+  studyProgramId      String
+  clusterId           String?
+  courseId            String
+  academicPeriodId    String
+  ownerId             String
+  title               String
+  currentVersionId    String?        @unique
+  status              DocumentStatus @default(DRAFT)
+  currentApprovalStep Int            @default(0)
+  submittedAt         DateTime?
+  approvedAt          DateTime?
+  archivedAt          DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  faculty        Faculty        @relation(fields: [facultyId], references: [id], onDelete: Restrict)
+  studyProgram   StudyProgram   @relation(fields: [studyProgramId], references: [id], onDelete: Restrict)
+  cluster        CourseCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+  owner          User           @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  currentVersion DocumentVersion? @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+
+  versions      DocumentVersion[]        @relation("DocumentVersions")
+  approvals     Approval[]
+  revisions     RevisionRequest[]
+  certificates  VerificationCertificate[]
+  auditLogs     AuditLog[]
+
+  @@index([organizationId, status])
+  @@index([studyProgramId, status])
+  @@index([clusterId, status])
+  @@index([ownerId])
+  @@index([academicPeriodId])
+}
+
+model DocumentVersion {
+  id                    String   @id @default(cuid())
+  documentId            String
+  versionNumber         Int
+  originalFileName      String
+  originalStorageKey    String
+  convertedPdfStorageKey String?
+  finalPdfStorageKey    String?
+  mimeType              String
+  fileSize              Int
+  pageCount             Int      @default(0)
+  sourceHash            String
+  finalHash             String?
+  changeSummary         String?
+  processingStatus      ProcessingStatus @default(PENDING)
+  processingError       String?
+  uploadedById          String
+  createdAt             DateTime @default(now())
+
+  document      Document @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
+  currentOf     Document? @relation("CurrentVersion")
+  uploadedBy    User     @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  metadata      DocumentMetadata?
+  validations   ValidationResult[]
+  approvals     Approval[]
+  revisions     RevisionRequest[]
+  certificates  VerificationCertificate[]
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+  @@index([sourceHash])
+}
+
+model DocumentMetadata {
+  id                String  @id @default(cuid())
+  documentVersionId String  @unique
+  courseCode        String
+  courseName        String
+  credits           Int
+  semester          Int
+  developerName     String
+  revisionNumber    String  @default("0")
+  preparationDate   DateTime
+  additionalData    Json?
+
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+}
+
+model ValidationResult {
+  id                String             @id @default(cuid())
+  documentVersionId String
+  ruleCode          String
+  category          String
+  severity          ValidationSeverity
+  status            ValidationStatus
+  title             String
+  description       String
+  pageNumber        Int?
+  resolvedAt        DateTime?
+  createdAt         DateTime           @default(now())
+
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+
+  @@index([documentVersionId, severity])
+}
+
+// ----------------------------------------------------------------------------
+// Workflow, approvals, revisions
+// ----------------------------------------------------------------------------
+
+model Workflow {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  steps        WorkflowStep[]
+
+  @@index([organizationId, isActive])
+}
+
+model WorkflowStep {
+  id                String  @id @default(cuid())
+  workflowId        String
+  order             Int
+  role              Role
+  label             String
+  slaHours          Int     @default(48)
+  requiresSignature Boolean @default(false)
+  requiresChecklist Boolean @default(false)
+
+  workflow  Workflow   @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  approvals Approval[]
+
+  @@unique([workflowId, order])
+  @@index([workflowId])
+}
+
+model Approval {
+  id                String         @id @default(cuid())
+  documentId        String
+  documentVersionId String
+  workflowStepId    String
+  approverId        String?
+  status            ApprovalStatus @default(PENDING)
+  comments          String?
+  startedAt         DateTime?
+  dueAt             DateTime?
+  actedAt           DateTime?
+  signatureId       String?
+  invalidatedAt     DateTime?
+  createdAt         DateTime       @default(now())
+
+  document        Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+  workflowStep    WorkflowStep    @relation(fields: [workflowStepId], references: [id], onDelete: Restrict)
+  approver        User?           @relation(fields: [approverId], references: [id], onDelete: SetNull)
+  signature       Signature?      @relation(fields: [signatureId], references: [id], onDelete: SetNull)
+  checklist       ReviewChecklist[]
+  revisions       RevisionRequest[]
+
+  @@index([documentId, status])
+  @@index([approverId, status])
+  @@index([documentVersionId])
+}
+
+model ReviewChecklist {
+  id         String          @id @default(cuid())
+  approvalId String
+  itemCode   String
+  label      String
+  status     ChecklistStatus @default(UNCHECKED)
+  comment    String?
+  pageNumber Int?
+
+  approval Approval @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+
+  @@unique([approvalId, itemCode])
+  @@index([approvalId])
+}
+
+model RevisionRequest {
+  id                String           @id @default(cuid())
+  documentId        String
+  documentVersionId String
+  approvalId        String?
+  requestedById     String
+  category          RevisionCategory
+  notes             String
+  status            RevisionStatus   @default(OPEN)
+  resolvedAt        DateTime?
+  createdAt         DateTime         @default(now())
+
+  document        Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+  approval        Approval?       @relation(fields: [approvalId], references: [id], onDelete: SetNull)
+  requestedBy     User            @relation(fields: [requestedById], references: [id], onDelete: Restrict)
+
+  @@index([documentId, status])
+}
+
+// ----------------------------------------------------------------------------
+// Signatures & placement
+// ----------------------------------------------------------------------------
+
+model Signature {
+  id        String        @id @default(cuid())
+  userId    String
+  type      SignatureType
+  storageKey String
+  imageHash String
+  isDefault Boolean       @default(false)
+  createdAt DateTime      @default(now())
+  revokedAt DateTime?
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approvals Approval[]
+
+  @@index([userId])
+}
+
+model SignaturePlacementTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  version        Int      @default(1)
+  documentType   String   @default("RPS")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  placements   SignaturePlacement[]
+
+  @@index([organizationId, isActive])
+}
+
+model SignaturePlacement {
+  id               String  @id @default(cuid())
+  templateId       String
+  role             Role
+  pageNumber       Int     @default(1)
+  x                Float
+  y                Float
+  width            Float
+  height           Float
+  includeName      Boolean @default(true)
+  includeTitle     Boolean @default(true)
+  includeTimestamp Boolean @default(true)
+
+  template SignaturePlacementTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+}
+
+// ----------------------------------------------------------------------------
+// Verification & certificates
+// ----------------------------------------------------------------------------
+
+model VerificationCertificate {
+  id                 String            @id @default(cuid())
+  documentId         String
+  documentVersionId  String
+  certificateNumber  String            @unique
+  verificationTokenHash String         @unique
+  finalDocumentHash  String
+  qrStorageKey       String?
+  status             CertificateStatus @default(ACTIVE)
+  issuedAt           DateTime          @default(now())
+  revokedAt          DateTime?
+  revocationReason   String?
+
+  document        Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+// ----------------------------------------------------------------------------
+// Audit, notifications, settings
+// ----------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  documentId     String?
+  action         String
+  entityType     String
+  entityId       String
+  oldValues      Json?
+  newValues      Json?
+  metadata       Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  document     Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([documentId])
+  @@index([action])
+  @@index([userId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+model SystemSetting {
+  id             String   @id @default(cuid())
+  organizationId String
+  key            String
+  value          Json
+  updatedById    String?
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy    User?        @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, key])
+}
