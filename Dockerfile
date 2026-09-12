@@ -6,6 +6,10 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /app
+# Force a flat (hoisted) node_modules so `.prisma` and `@prisma` live at the
+# top level and can be copied into the runtime image. pnpm's default symlinked
+# layout hides them inside the .pnpm store, breaking the runner COPY steps.
+RUN printf 'node-linker=hoisted\n' > /app/.npmrc
 
 # ----- Dependencies -----
 FROM base AS deps
