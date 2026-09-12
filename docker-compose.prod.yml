@@ -10,7 +10,7 @@ services:
   # Seed dijalankan sekali secara manual (lihat DEPLOY.md).
   migrate:
     command: >
-      /bin/sh -c "pnpm exec prisma migrate deploy || pnpm exec prisma db push --accept-data-loss"
+      /bin/sh -c "if ls prisma/migrations/*/migration.sql >/dev/null 2>&1; then pnpm exec prisma migrate deploy; else pnpm exec prisma db push --accept-data-loss; fi"
 
   app:
     environment:
