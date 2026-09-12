@@ -125,3 +125,127 @@ npm run db:seed   # membuat akun demo + mencetak tautan verifikasi
 - **Vercel**: paling mudah untuk Next.js, tapi *tanpa* LibreOffice → konversi
   DOCX otomatis tidak jalan (user harus unggah PDF). Tetap butuh Neon + R2.
 - **Fly.io / Koyeb**: juga Docker-based, punya free allowance; alur mirip Render.
+- **VPS (Biznet Gio / server Linux sendiri)**: lihat bagian di bawah — semua
+  komponen jalan di satu server, tanpa Neon/R2.
+
+---
+
+# Deploy ke VPS (Biznet Gio NEO Lite / server Linux mana pun)
+
+Kalau punya VPS/cloud VM, ini cara **paling sederhana**: seluruh stack
+(aplikasi + PostgreSQL + MinIO storage + Mailpit + reverse proxy HTTPS) jalan di
+satu server lewat Docker Compose. **Tidak perlu Neon maupun Cloudflare R2** —
+Postgres & storage jalan sebagai container dengan disk persisten.
+
+## ⚠️ Pilih produk yang benar
+
+- **JANGAN** pakai *NEO Web Hosting* / *NEO WordPress* (itu shared hosting
+  PHP/MySQL — tidak bisa menjalankan Node.js, Docker, atau LibreOffice).
+- **PAKAI** menu **Compute → NEO Lite** (VM/VPS Linux).
+
+## 1. Buat VM
+
+- OS: **Ubuntu 22.04 LTS**.
+- Spesifikasi minimal disarankan: **2 vCPU / 4 GB RAM / 40 GB disk**
+  (4 GB penting agar build Next.js + LibreOffice tidak kehabisan memori).
+- Catat **IP publik** VM.
+
+## 2. Domain (untuk HTTPS)
+
+Caddy menerbitkan sertifikat HTTPS otomatis, tapi butuh nama domain yang
+mengarah ke IP VM.
+
+**Belum punya domain? Pakai DuckDNS (gratis):**
+1. Buka https://www.duckdns.org → login (Google/GitHub).
+2. Buat subdomain, mis. `rps-sign` → jadi `rps-sign.duckdns.org`.
+3. Di kolom **current ip**, isi **IP publik VM**, klik **update ip**.
+4. Domain kamu sekarang: `rps-sign.duckdns.org`.
+
+Atau, kalau punya domain sendiri: buat **A record** ke IP publik VM.
+
+## 3. Pasang Docker & Git (via SSH)
+
+```bash
+ssh root@<IP-publik-VM>
+
+apt update && apt upgrade -y
+apt install -y git ca-certificates curl
+curl -fsSL https://get.docker.com | sh    # Docker + compose plugin
+```
+
+## 4. Ambil kode & konfigurasi
+
+```bash
+git clone https://github.com/tioantawibawa/rps-sign.git
+cd rps-sign
+git checkout claude/nurma-database-connection-ndhemo
+
+# Simpan variabel produksi ke file .env (dibaca otomatis oleh docker compose).
+cat > .env <<EOF
+DOMAIN=rps-sign.duckdns.org
+AUTH_SECRET=$(openssl rand -base64 32)
+EOF
+```
+
+> `.env` di server ini hanya berisi `DOMAIN` + `AUTH_SECRET` untuk interpolasi
+> Compose. Kredensial Postgres/MinIO internal sudah diatur di
+> `docker-compose.yml` dan tidak diekspos ke internet.
+
+## 5. Jalankan seluruh stack
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Build pertama agak lama (memasang LibreOffice + build Next.js). Pantau dengan:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f
+```
+
+## 6. Isi akun demo (sekali saja)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm migrate /bin/sh -c "pnpm exec tsx prisma/seed.ts"
+```
+
+## 7. Firewall
+
+Hanya buka port yang diperlukan (Postgres/MinIO/Mailpit TIDAK diekspos):
+```bash
+ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw --force enable
+```
+
+Buka `https://rps-sign.duckdns.org`. Selesai.
+
+## Operasional
+
+**Update ke versi terbaru:**
+```bash
+cd rps-sign
+git pull
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+**Lihat status / log:**
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f app
+```
+
+**Backup database:**
+```bash
+docker compose exec db pg_dump -U rps rps_sign > backup_$(date +%F).sql
+```
+
+**Backup file (volume MinIO & DB) juga disarankan** — data ada di Docker volume
+`rps-sign_db_data` dan `rps-sign_minio_data`.
+
+## Catatan keamanan (produksi)
+
+- [ ] Hapus/ganti akun demo & password `Password123!`.
+- [ ] Ganti `MINIO_ROOT_PASSWORD` & kredensial Postgres di `docker-compose.yml`
+      dari nilai default sebelum dipakai serius.
+- [ ] Aktifkan backup terjadwal (DB + volume MinIO).
+- [ ] `MAIL_DRIVER` diset `smtp` + SMTP nyata bila perlu email keluar
+      (default memakai Mailpit internal, UI di `:8025` — jangan diekspos publik).
