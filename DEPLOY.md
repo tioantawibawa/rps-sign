@@ -1,169 +1,123 @@
-# Deploy RPS Sign ke VPS Biznet (Docker Compose + Caddy/HTTPS)
+# Deploy RPS Sign gratis (Render + Neon + Cloudflare R2)
 
-Panduan produksi memakai Docker Compose. Semua layanan (aplikasi, PostgreSQL,
-MinIO, Mailpit, reverse proxy Caddy dengan HTTPS otomatis) berjalan sebagai
-kontainer. Estimasi 20–40 menit.
+Panduan hosting RPS Sign agar bisa diakses via internet **tanpa biaya**, dengan
+fitur penuh (termasuk konversi DOCX→PDF, karena app dijalankan sebagai container
+Docker yang sudah memasang LibreOffice).
 
-## 0. Prasyarat
-- VPS Biznet Ubuntu 22.04/24.04 LTS, akses SSH.
-- **RAM minimal 2 GB** (build Next.js + LibreOffice). Bila 1 GB, wajib tambah swap (Langkah 2).
-- **Domain/subdomain** yang bisa diarahkan ke IP VPS (mis. `rps.namakampus.ac.id`). HTTPS butuh domain.
-- Port **80** dan **443** terbuka ke internet.
+## Arsitektur hosting
 
-> Ganti `rps.contoh.ac.id` dengan domain Anda dan `IP_VPS` dengan IP publik VPS Biznet Anda di semua contoh.
+| Komponen | Layanan gratis | Fungsi |
+|---|---|---|
+| Aplikasi (Docker) | **Render** Web Service | Menjalankan Next.js + LibreOffice |
+| Database | **Neon** PostgreSQL | Data aplikasi (gratis permanen) |
+| Object storage | **Cloudflare R2** | File dokumen & tanda tangan (S3-compatible) |
+| Email | `console` (default) | Email dicatat di log; opsional ganti SMTP |
 
----
-
-## 1. Masuk & amankan VPS
-```bash
-ssh root@IP_VPS
-apt update && apt -y upgrade
-# Buat user non-root (opsional tapi disarankan)
-adduser deploy && usermod -aG sudo deploy
-```
-
-Firewall — hanya SSH, HTTP, HTTPS:
-```bash
-apt -y install ufw
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw --force enable
-ufw status
-```
-
-## 2. (Wajib jika RAM ≤ 2 GB) Tambah swap 2 GB
-```bash
-fallocate -l 2G /swapfile && chmod 600 /swapfile
-mkswap /swapfile && swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
-free -h
-```
-
-## 3. Install Docker + Compose plugin
-```bash
-curl -fsSL https://get.docker.com | sh
-docker --version && docker compose version
-# (opsional) agar user 'deploy' bisa docker tanpa sudo:
-usermod -aG docker deploy   # lalu logout & login lagi
-```
-
-## 4. Ambil kode ke VPS
-**Cara A — Git (disarankan).** Dorong proyek ke repo (GitHub/GitLab privat) dari PC Anda dulu, lalu:
-```bash
-cd /opt
-git clone https://github.com/USER/rps-sign.git
-cd rps-sign
-```
-
-**Cara B — salin langsung dari Windows** (PowerShell di PC Anda; `node_modules`/`.next` tidak perlu ikut):
-```powershell
-# jalankan di PC, bukan di VPS
-scp -r "D:\Project nurma\rps-sign" deploy@IP_VPS:/opt/rps-sign
-```
-> Bila memakai Cara B, hapus dulu folder berat agar transfer cepat: `node_modules`, `.next`, `.storage`.
-
-## 5. Konfigurasi environment produksi
-Buat/edit file `.env` di dalam folder proyek pada VPS (dipakai Docker Compose untuk mengisi `${DOMAIN}` & `${AUTH_SECRET}`):
-```bash
-cd /opt/rps-sign
-cat > .env <<'EOF'
-DOMAIN=rps.contoh.ac.id
-AUTH_SECRET=GANTI_DENGAN_HASIL_PERINTAH_DI_BAWAH
-EOF
-
-# Buat AUTH_SECRET acak kuat lalu tempel ke .env:
-openssl rand -base64 32
-```
-Tempel hasil `openssl` ke baris `AUTH_SECRET=`. (Nilai DATABASE_URL, S3, SMTP sudah
-diatur otomatis oleh `docker-compose.yml` untuk jaringan internal kontainer.)
-
-## 6. Arahkan domain ke VPS (DNS)
-Di panel DNS domain Anda (Biznet atau registrar), buat **A record**:
-```
-Host: rps (atau @)   Type: A   Value: IP_VPS   TTL: 3600
-```
-Tunggu propagasi (cek: `ping rps.contoh.ac.id` menunjukkan IP_VPS). HTTPS Caddy
-baru berhasil jika DNS sudah mengarah.
-
-## 7. Jalankan (build + start semua layanan)
-```bash
-cd /opt/rps-sign
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
-Build pertama memakan beberapa menit (compile Next.js + pasang LibreOffice).
-Pantau:
-```bash
-docker compose logs -f app
-docker compose logs -f caddy   # lihat proses penerbitan sertifikat HTTPS
-```
-
-## 8. Isi data awal (SEKALI saja)
-Layanan `migrate` hanya menerapkan skema (tidak seed) agar restart tidak menghapus data.
-Jalankan seed satu kali untuk membuat akun demo + contoh dokumen:
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml \
-  run --rm migrate pnpm exec tsx prisma/seed.ts
-```
-> ⚠️ Perintah seed **menghapus lalu mengisi ulang** data. Jangan dijalankan lagi setelah dipakai produksi kecuali memang ingin reset.
-
-## 9. Verifikasi
-- Buka `https://rps.contoh.ac.id` → halaman login RPS Sign dengan gembok HTTPS.
-- Cek kesehatan: `curl https://rps.contoh.ac.id/api/health` → `{"status":"ok"}`.
-- Login demo: `admin@yppi-rembang.ac.id` / `Password123!`.
+> **Catatan tier gratis Render:** service akan "tidur" setelah ~15 menit tanpa
+> trafik, sehingga request pertama setelah idle butuh ~30–60 detik (cold start).
+> Wajar untuk demo/internal.
 
 ---
 
-## 10. WAJIB setelah online (keamanan)
-1. **Ganti kata sandi akun demo** (login sebagai admin → Pengguna) atau hapus akun yang tak dipakai. Jangan biarkan `Password123!` di produksi.
-2. **Email nyata**: default memakai Mailpit (menangkap email, tidak mengirim keluar).
-   Untuk pengiriman nyata, ubah env `app` di `docker-compose.prod.yml`:
-   ```yaml
-   MAIL_DRIVER: smtp
-   SMTP_HOST: smtp.penyedia-anda.com
-   SMTP_PORT: "587"
-   SMTP_USER: "..."
-   SMTP_PASS: "..."
-   SMTP_SECURE: "false"
-   MAIL_FROM: "RPS Sign <no-reply@domain-anda>"
+## 1. Siapkan Database (Neon)
+
+1. Daftar di https://neon.tech (bisa login pakai GitHub).
+2. Create project → pilih region terdekat (mis. Singapore).
+3. Salin **connection string** (format `postgresql://user:pass@host/dbname`).
+4. Pastikan diakhiri `?sslmode=require`, contoh:
    ```
-   lalu `docker compose ... up -d`.
-3. **Backup rutin** (lihat bawah). Jangan pernah commit `.env` berisi rahasia.
-4. Pastikan `ufw` aktif — Postgres/MinIO/Mailpit tidak boleh diakses dari internet.
+   postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/rps_sign?sslmode=require
+   ```
+   Simpan sebagai `DATABASE_URL`.
 
-## 11. Operasional
-Update aplikasi setelah ada perubahan kode:
-```bash
-cd /opt/rps-sign && git pull    # atau salin ulang
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+## 2. Siapkan Storage (Cloudflare R2)
+
+1. Masuk https://dash.cloudflare.com → **R2** → aktifkan (perlu verifikasi kartu,
+   tapi ada free tier 10 GB tanpa biaya egress).
+2. **Create bucket**, mis. `rps-sign`. → ini `S3_BUCKET`.
+3. Menu R2 → **Manage R2 API Tokens** → **Create API token**:
+   - Permission: **Object Read & Write**, scope ke bucket tadi.
+   - Salin **Access Key ID** → `S3_ACCESS_KEY_ID`
+   - Salin **Secret Access Key** → `S3_SECRET_ACCESS_KEY`
+4. Endpoint R2 (`S3_ENDPOINT`) berbentuk:
+   ```
+   https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+   ```
+   `<ACCOUNT_ID>` bisa dilihat di halaman R2 (kanan atas / detail bucket).
+5. Untuk R2: `S3_REGION=auto` dan `S3_FORCE_PATH_STYLE=true` (sudah diatur di
+   `render.yaml`).
+
+> App tidak pernah membuka file langsung dari R2 ke browser. File diambil oleh
+> server lalu diserahkan lewat endpoint bertanda tangan HMAC (`/api/files/download`),
+> jadi bucket cukup **privat** — jangan diset publik.
+
+## 3. Inisialisasi skema DB + akun demo (dari komputermu)
+
+Proyek ini memakai `prisma db push` (belum ada folder migrations), dan runner
+image sengaja minimal tanpa Prisma CLI. Jadi jalankan sekali dari komputermu ke
+Neon (Neon dapat diakses publik):
+
+**PowerShell (Windows):**
+```powershell
+$env:DATABASE_URL="postgresql://...neon.../rps_sign?sslmode=require"
+pnpm install
+pnpm exec prisma db push
+pnpm db:seed      # membuat akun demo + mencetak tautan verifikasi
 ```
 
-Backup database:
-```bash
-docker compose exec db pg_dump -U rps rps_sign > backup_$(date +%F).sql
-```
+`pnpm db:seed` mencetak akun demo (password: `Password123!`).
+**Untuk produksi nyata, hapus/ganti akun demo ini.**
 
-Restore:
-```bash
-cat backup_YYYY-MM-DD.sql | docker compose exec -T db psql -U rps -d rps_sign
-```
+## 4. Deploy ke Render
 
-Lihat status / hentikan:
-```bash
-docker compose ps
-docker compose -f docker-compose.yml -f docker-compose.prod.yml down    # stop (data tetap di volume)
-```
+1. Push repo ini ke GitHub (lihat bagian bawah).
+2. Daftar di https://render.com (login pakai GitHub).
+3. **New → Blueprint** → pilih repo ini. Render membaca `render.yaml` dan membuat
+   Web Service Docker otomatis.
+4. Render meminta nilai variabel `sync: false`. Isi:
 
-Akses UI Mailpit (opsional, via SSH tunnel dari PC Anda — tidak diekspos publik):
-```bash
-ssh -L 8025:localhost:8025 deploy@IP_VPS
-# lalu buka http://localhost:8025 di browser PC
-```
+   | Variabel | Nilai |
+   |---|---|
+   | `DATABASE_URL` | connection string Neon (langkah 1) |
+   | `S3_ENDPOINT` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+   | `S3_ACCESS_KEY_ID` | dari R2 (langkah 2) |
+   | `S3_SECRET_ACCESS_KEY` | dari R2 (langkah 2) |
+   | `S3_BUCKET` | nama bucket, mis. `rps-sign` |
+   | `APP_URL` | *(kosongkan dulu — lihat langkah 5)* |
+   | `NEXT_PUBLIC_APP_URL` | *(kosongkan dulu)* |
+   | `AUTH_URL` | *(kosongkan dulu)* |
 
-## 12. Catatan
-- Skema diterapkan via `prisma db push` (cukup untuk mulai). Untuk evolusi skema
-  terkontrol, buat migrasi: `pnpm db:migrate` di dev, commit folder `prisma/migrations`,
-  lalu di server `migrate` akan memakai `prisma migrate deploy`.
-- File dokumen/tanda tangan disimpan di MinIO (volume `minio_data`) dan hanya diakses
-  lewat URL bertanda-tangan HMAC — tidak ada URL publik permanen.
-- Konversi DOCX memakai LibreOffice yang sudah terpasang di image `app`.
+   `AUTH_SECRET` dibuat otomatis oleh Render.
+5. Klik **Apply / Create**. Deploy pertama akan build image Docker (agak lama krn
+   memasang LibreOffice). Setelah jadi, kamu dapat URL seperti
+   `https://rps-sign.onrender.com`.
+6. **Isi 3 URL tadi** dengan URL Render kamu, lalu **redeploy**:
+   ```
+   APP_URL=https://rps-sign.onrender.com
+   NEXT_PUBLIC_APP_URL=https://rps-sign.onrender.com
+   AUTH_URL=https://rps-sign.onrender.com
+   ```
+   (Environment → edit → Save → Manual Deploy.)
+
+## 5. Verifikasi
+
+- Buka `https://<app>.onrender.com/api/health` → harus `ok`.
+- Buka halaman utama, login dengan akun demo hasil seed.
+- Coba unggah dokumen (DOCX akan dikonversi ke PDF oleh LibreOffice di container).
+
+---
+
+## Checklist keamanan sebelum dipakai serius
+
+- [ ] Hapus/ganti akun demo & password `Password123!`.
+- [ ] `AUTH_SECRET` acak kuat (Render `generateValue` sudah memenuhi).
+- [ ] Bucket R2 **privat** (bukan public access).
+- [ ] Ganti `MAIL_DRIVER=smtp` + isi `SMTP_*` bila perlu email nyata
+      (mis. Brevo/Resend punya free tier).
+- [ ] Backup DB Neon & bucket R2 secara berkala.
+
+## Alternatif
+
+- **Vercel**: paling mudah untuk Next.js, tapi *tanpa* LibreOffice → konversi
+  DOCX otomatis tidak jalan (user harus unggah PDF). Tetap butuh Neon + R2.
+- **Fly.io / Koyeb**: juga Docker-based, punya free allowance; alur mirip Render.

@@ -1,0 +1,65 @@
+# Render Blueprint untuk RPS Sign
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Cara pakai:
+#   1. Push repo ini ke GitHub.
+#   2. Di Render: New > Blueprint > pilih repo ini. Render membaca file ini.
+#   3. Isi environment variables yang bertanda `sync: false` (lihat DEPLOY.md).
+#
+# Catatan: DATABASE_URL memakai Neon (Postgres gratis), storage memakai
+# Cloudflare R2 (S3-compatible). Nilai rahasia TIDAK disimpan di file ini —
+# semuanya diisi lewat dashboard Render.
+
+services:
+  - type: web
+    name: rps-sign
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # --- Runtime ---
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_TRUST_HOST
+        value: "true"
+      # AUTH_SECRET dibuat otomatis & kuat oleh Render (32+ byte acak).
+      - key: AUTH_SECRET
+        generateValue: true
+
+      # --- URL publik ---
+      # Isi setelah tahu URL Render kamu, mis. https://rps-sign.onrender.com
+      - key: APP_URL
+        sync: false
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false
+      - key: AUTH_URL
+        sync: false
+
+      # --- Database (Neon) ---
+      # Connection string Neon. WAJIB pakai ?sslmode=require di akhir.
+      - key: DATABASE_URL
+        sync: false
+
+      # --- Object storage (Cloudflare R2, S3-compatible) ---
+      - key: STORAGE_DRIVER
+        value: s3
+      - key: S3_FORCE_PATH_STYLE
+        value: "true"
+      - key: S3_REGION
+        value: auto
+      - key: S3_ENDPOINT
+        sync: false   # https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BUCKET
+        sync: false   # nama bucket R2, mis. rps-sign
+
+      # --- Email ---
+      # console = email hanya dicatat di log (tidak dikirim). Ganti ke smtp
+      # + isi SMTP_* bila ingin kirim email betulan (mis. Brevo/Resend).
+      - key: MAIL_DRIVER
+        value: console
