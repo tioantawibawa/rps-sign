@@ -60,12 +60,16 @@ Neon (Neon dapat diakses publik):
 **PowerShell (Windows):**
 ```powershell
 $env:DATABASE_URL="postgresql://...neon.../rps_sign?sslmode=require"
-pnpm install
-pnpm exec prisma db push
-pnpm db:seed      # membuat akun demo + mencetak tautan verifikasi
+npm install
+npx prisma db push
+npm run db:seed   # membuat akun demo + mencetak tautan verifikasi
 ```
 
-`pnpm db:seed` mencetak akun demo (password: `Password123!`).
+> Jika belum punya `pnpm`, pakai `npm` seperti di atas. `npm install` diperlukan
+> agar `tsx` (dipakai oleh `db:seed`) tersedia. Deploy di Render tetap memakai
+> Docker, jadi pilihan npm/pnpm di sini hanya untuk komputermu.
+
+`npm run db:seed` mencetak akun demo (password: `Password123!`).
 **Untuk produksi nyata, hapus/ganti akun demo ini.**
 
 ## 4. Deploy ke Render
