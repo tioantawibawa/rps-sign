@@ -6,6 +6,10 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /app
+# Force a flat (hoisted) node_modules so `.prisma` and `@prisma` live at the
+# top level and can be copied into the runtime image. pnpm's default symlinked
+# layout hides them inside the .pnpm store, breaking the runner COPY steps.
+RUN printf 'node-linker=hoisted\n' > /app/.npmrc
 
 # ----- Dependencies -----
 FROM base AS deps
@@ -48,6 +52,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+# Argon2 native bindings. Next.js standalone tracing misses @node-rs's
+# dynamically-required platform binary package, so the password hash/verify
+# throws at runtime and every login fails. Copy the whole scope explicitly.
+COPY --from=builder /app/node_modules/@node-rs ./node_modules/@node-rs
 
 RUN mkdir -p /app/.storage && chown -R nextjs:nodejs /app/.storage
 USER nextjs
