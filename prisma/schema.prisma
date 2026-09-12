@@ -7,7 +7,11 @@
 //  - Composite indexes are added for the hot filter paths (status, scoping).
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Include the OpenSSL 3.0 engine explicitly. The Debian bookworm-slim runtime
+  // ships OpenSSL 3.0.x, but Prisma's build-time detection can misfire and bundle
+  // only the 1.1.x engine, causing PrismaClientInitializationError at runtime.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
